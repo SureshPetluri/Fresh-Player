@@ -49,6 +49,13 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
                 onTap: () async {
                   File? videoFile = await video.file;
                   if (videoFile != null) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            VideoPlayScreen(videoFile: videoFile),
+                      ),
+                    );
                   }
                 },
                 child: Text(video.title ?? 'No title'),
