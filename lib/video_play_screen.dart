@@ -87,7 +87,7 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
 
   void _handleTap() {
     setState(() {
-      _showVideoDetails = true;
+      _showVideoDetails = !_showVideoDetails;
       Future.delayed(const Duration(seconds: 3), () {
         _showVideoDetails = false;
       });
