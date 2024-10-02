@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:fresh_player/video_play_screen.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -15,9 +16,12 @@ class VideosShowScreen extends StatefulWidget {
 }
 
 class _VideosShowScreenState extends State<VideosShowScreen> {
+  List<AssetEntity> temporaryVideos = <AssetEntity>[];
+  TextEditingController searchController = TextEditingController();
 
   @override
   void initState() {
+    temporaryVideos = widget.downloadVideos;
     super.initState();
   }
 
@@ -33,6 +37,15 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
     return '$hours:$minutes:$seconds';
   }
 
+  searchQuery(String query) {
+    setState(() {
+      temporaryVideos = widget.downloadVideos
+          .where((element) =>
+              (element.title ?? "").toUpperCase().contains(query.toUpperCase()))
+          .toList();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -41,8 +54,20 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
         title: Text(widget.title),
       ),
       body: SingleChildScrollView(
-        child: Column(
-          children: widget.downloadVideos.map((video) {
+        child: Column(children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+            child: TextFormField(
+              controller: searchController,
+              onChanged: searchQuery,
+              decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: "Search Movie",
+                  border: OutlineInputBorder()),
+            ),
+          ),
+          ...temporaryVideos.map((video) {
             return ListTile(
               leading: const Icon(Icons.video_library),
               subtitle: InkWell(
@@ -52,8 +77,10 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) =>
-                            VideoPlayScreen(videoFile: videoFile,name: video.title?? "",),
+                        builder: (context) => VideoPlayScreen(
+                          videoFile: videoFile,
+                          name: video.title ?? "",
+                        ),
                       ),
                     );
                   }
@@ -62,7 +89,7 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
               ),
             );
           }).toList(),
-        ),
+        ]),
       ),
     );
   }
