@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -27,11 +29,12 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
   late TransformationController _transformationController;
   double _currentScale = 1.0;
   int startTime = 0;
-
+  Timer? _positionSaveTimer;
+  Duration? _savedPosition;
   @override
   void initState() {
     super.initState();
-    _initializeVideoPlayer();
+    _loadSavedPosition();
     _controller = AnimationController(
       duration: const Duration(seconds: 1),
       vsync: this,
@@ -39,6 +42,44 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
     _animation = Tween<double>(begin: 0.0, end: 1.0).animate(_controller);
     _transformationController = TransformationController();
   }
+
+  Future<void> _loadSavedPosition() async {
+    final prefs = await SharedPreferences.getInstance();
+    final positionInMilliseconds = prefs.getInt(_getVideoKey());
+
+    if (positionInMilliseconds != null) {
+      setState(() {
+        _savedPosition = Duration(milliseconds: positionInMilliseconds);
+      });
+    }
+
+    _initializeVideoPlayer();
+  }
+
+  // Save the current position of the video
+  Future<void> _saveVideoPosition() async {
+    if (videoController != null && videoController!.value.isInitialized) {
+      final position = videoController!.value.position;
+
+      // Don't save if we're at the beginning or end
+      if (position.inMilliseconds > 0 &&
+          position.inMilliseconds < videoController!.value.duration.inMilliseconds - 5000) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt(_getVideoKey(), position.inMilliseconds);
+      }
+    }
+  }
+
+  // Generate a unique key for this video
+  String _getVideoKey() {
+    // Use the file path as a unique identifier
+    return 'video_position_${widget.videoFile.path.hashCode}';
+  }
+
+
+
+
+
 
   void _initializeVideoPlayer() async {
     videoController = VideoPlayerController.file(widget.videoFile)
@@ -56,10 +97,22 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
         }
         setState(() {});
       });
-
     await videoController?.initialize();
+    // If we have a saved position, seek to it
+    if (_savedPosition != null && videoController != null) {
+      // Make sure the saved position is valid (not beyond the video duration)
+      if (_savedPosition!.inMilliseconds < (videoController!.value.duration.inMilliseconds - 5000)) {
+        await videoController!.seekTo(_savedPosition!);
+      }
+    }
     setState(() {
       _isVideoReady = true; // Video is now ready
+    });
+    // Start a timer to periodically save the position (every 5 seconds)
+    _positionSaveTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (mounted && videoController != null && videoController!.value.isPlaying) {
+             _saveVideoPosition();
+            }
     });
     videoController?.play();
   }
@@ -96,9 +149,11 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
 
   @override
   void dispose() {
+    _saveVideoPosition();
     _controller.dispose();
     videoController?.dispose();
     _transformationController.dispose();
+    _positionSaveTimer?.cancel();
     WakelockPlus.disable();
     super.dispose();
   }
@@ -124,7 +179,8 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
   Widget build(BuildContext context) {
     final orientation = MediaQuery.of(context).orientation;
     return PopScope(
-      onPopInvoked: (e) {
+      onPopInvokedWithResult: (e, _) {
+        _saveVideoPosition();
         videoController?.pause();
         SystemChrome.setPreferredOrientations([
           DeviceOrientation.portraitUp,
@@ -138,6 +194,7 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
             : AppBar(
                 leading: IconButton(
                   onPressed: () {
+                    _saveVideoPosition();
                     Navigator.pop(context);
                     videoController?.pause();
                   },
@@ -169,6 +226,11 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
     return Stack(
       children: [
         InteractiveViewer(
+            panEnabled: false,
+            scaleEnabled: true,
+            trackpadScrollCausesScale: true,
+            panAxis: PanAxis.aligned,
+            clipBehavior: Clip.antiAlias,
             transformationController: _transformationController,
             boundaryMargin: const EdgeInsets.all(20),
             minScale: 1.0,
@@ -188,7 +250,7 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-             /* Slider(
+              /* Slider(
                   value: (startTime) /
                       (videoController?.value.duration.inSeconds ?? 0.0),
                   onChanged: (e) {
@@ -236,6 +298,7 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
                   color: Color(0xFFFFFFFF),
                 ),
                 onPressed: () {
+                  _saveVideoPosition();
                   videoController?.pause();
                   _isFullScreen = false;
                   SystemChrome.setPreferredOrientations([
@@ -274,11 +337,18 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
           videoController?.play();
         }
       },
-      icon: AnimatedIcon(
-        icon: AnimatedIcons.pause_play,
-        progress: _animation,
-        size: size,
-        color: Colors.blue,
+      icon: TweenAnimationBuilder(
+          tween: Tween<double>(begin: 0.0, end: 1.0),
+          duration: const Duration(seconds: 1),
+          builder: (context, double value, child) {
+            return AnimatedIcon(
+              icon: AnimatedIcons.play_pause,
+              progress: AlwaysStoppedAnimation(value),
+            // progress: _animation,
+            size: size,
+            color: Colors.blue,
+          );
+        }
       ),
     );
   }
