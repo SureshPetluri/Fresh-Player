@@ -35,6 +35,7 @@ class _VideoPlayScreenState extends State<VideoPlayScreen>
   void initState() {
     super.initState();
     _loadSavedPosition();
+
     _controller = AnimationController(
       duration: const Duration(seconds: 1),
       vsync: this,

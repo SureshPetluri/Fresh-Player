@@ -70,7 +70,8 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
           ...temporaryVideos.map((video) {
             return ListTile(
               leading: const Icon(Icons.video_library),
-              subtitle: InkWell(
+              onTap: () {},
+              title: InkWell(
                 onTap: () async {
                   File? videoFile = await video.file;
                   if (videoFile != null) {
@@ -87,6 +88,14 @@ class _VideosShowScreenState extends State<VideosShowScreen> {
                 },
                 child: Text(video.title ?? 'No title'),
               ),
+              trailing: IconButton(
+                  onPressed: () async {
+                    File? videoFile = await video.file;
+                    if (videoFile != null) {
+                      videoFile.delete();
+                    }
+                  },
+                  icon: const Icon(Icons.delete)),
             );
           }).toList(),
         ]),
