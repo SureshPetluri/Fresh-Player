@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -26,33 +28,91 @@ class _FoldersShowingScreenState extends State<FoldersShowingScreen> {
   }
 
   Future<void> permissionsCalling() async {
-    if (await _requestPermissions(Permission.manageExternalStorage)) {
-      permissionsGranted =
-          await _requestPermissions(Permission.manageExternalStorage);
+    final bool permissionOk = await _requestPermissions();
+    final PermissionState ps = await PhotoManager.requestPermissionExtend();
+
+    if (permissionOk || ps.isAuth) {
+      if (mounted) {
+        setState(() {
+          permissionsGranted = true;
+        });
+      }
       debugPrint("Permission is Granted");
       _loadVideos();
     } else {
-      permissionsGranted = false;
+      if (mounted) {
+        setState(() {
+          permissionsGranted = false;
+        });
+      }
       debugPrint("Permission is not Granted");
     }
   }
 
-  Future<bool> _requestPermissions(Permission permission) async {
+  Future<bool> _requestPermissions() async {
     AndroidDeviceInfo build = await DeviceInfoPlugin().androidInfo;
-    if (build.version.sdkInt >= 30) {
+    if (build.version.sdkInt >= 33) {
+      var videosStatus = await Permission.videos.request();
+      var storageStatus = await Permission.storage.request();
+      var manageStatus = await Permission.manageExternalStorage.request();
+      return videosStatus.isGranted ||
+          storageStatus.isGranted ||
+          manageStatus.isGranted;
+    } else if (build.version.sdkInt >= 30) {
       var manageExternalStorageStatus =
           await Permission.manageExternalStorage.request();
       var storageStatus = await Permission.storage.request();
       return manageExternalStorageStatus.isGranted || storageStatus.isGranted;
     } else {
-      var storageStatus = await permission.request();
+      var storageStatus = await Permission.storage.request();
       return storageStatus.isGranted;
     }
   }
 
+  String _cleanTitle(String rawTitle) {
+    String t = rawTitle.toLowerCase().trim();
+    for (var ext in [
+      '.mp4',
+      '.mkv',
+      '.avi',
+      '.mov',
+      '.webm',
+      '.3gp',
+      '.flv',
+      '.ts',
+      '.m4v'
+    ]) {
+      if (t.endsWith(ext)) {
+        t = t.substring(0, t.length - ext.length);
+      }
+    }
+    return t.replaceAll(RegExp(r'[^a-z0-9]'), '');
+  }
+
   Future<void> _loadVideos() async {
-    final List<AssetPathEntity> albums =
-        await PhotoManager.getAssetPathList(type: RequestType.video);
+    // Query ONLY the master album containing all videos to avoid redundant album iterations
+    final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
+      type: RequestType.video,
+      hasAll: true,
+      onlyAll: true,
+    );
+
+    if (albums.isEmpty) {
+      if (mounted) {
+        setState(() {
+          categorizedVideos = {};
+        });
+      }
+      return;
+    }
+
+    final AssetPathEntity masterAlbum = albums.first;
+    final int totalAssets = await masterAlbum.assetCountAsync;
+
+    final List<AssetEntity> videos = await masterAlbum.getAssetListRange(
+      start: 0,
+      end: totalAssets,
+    );
 
     Map<String, List<AssetEntity>> tempCategorizedVideos = {
       'Downloads': [],
@@ -61,29 +121,82 @@ class _FoldersShowingScreenState extends State<FoldersShowingScreen> {
       'Others': [],
     };
 
-    for (var album in albums) {
-      final List<AssetEntity> videos =
-          await album.getAssetListRange(start: 0, end: 100);
-      for (var video in videos) {
-        final path = video.relativePath ?? '';
-        if (path.contains('download') &&
-            !(tempCategorizedVideos['Downloads']?.contains(video) ?? false)) {
-          tempCategorizedVideos['Downloads']?.add(video);
-        } else if (path.contains('Camera') &&
-            !(tempCategorizedVideos['Camera']?.contains(video) ?? false)) {
-          tempCategorizedVideos['Camera']?.add(video);
-        } else if (path.contains('WhatsApp') &&
-            !(tempCategorizedVideos['WhatsApp']?.contains(video) ?? false)) {
-          tempCategorizedVideos['WhatsApp']?.add(video);
-        } else {
-          tempCategorizedVideos['Others']?.add(video);
-        }
+    Set<String> processedVideoIds = {};
+    Set<String> processedFilePaths = {};
+    Set<String> processedSizeDurationSigs = {};
+    Set<String> processedTitleSigs = {};
+
+    for (var video in videos) {
+      // 1. Skip duplicate AssetEntity IDs
+      if (processedVideoIds.contains(video.id)) continue;
+      processedVideoIds.add(video.id);
+
+      // 2. Resolve actual disk file for deep deduplication
+      final File? file = await video.file;
+      final String filePath = file?.path.toLowerCase() ?? '';
+
+      // Skip non-existent files
+      if (file != null && !await file.exists()) continue;
+
+      // 3. Deduplicate by exact physical disk file path
+      if (filePath.isNotEmpty) {
+        if (processedFilePaths.contains(filePath)) continue;
+        processedFilePaths.add(filePath);
+      }
+
+      // 4. Deduplicate by physical file byte length + video duration (catches duplicate files copied across folders)
+      int fileSize = 0;
+      if (file != null) {
+        try {
+          fileSize = await file.length();
+        } catch (_) {}
+      }
+
+      final String sizeSig = '${fileSize}_${video.duration}';
+      if (fileSize > 0 && processedSizeDurationSigs.contains(sizeSig)) {
+        continue;
+      }
+      if (fileSize > 0) {
+        processedSizeDurationSigs.add(sizeSig);
+      }
+
+      // 5. Deduplicate by cleaned title + duration signature
+      final String rawTitle = video.title ?? (filePath.isNotEmpty ? filePath.split('/').last : '');
+      final String cleanTitle = _cleanTitle(rawTitle);
+      final String titleSig = '${cleanTitle}_${video.duration}';
+
+      if (cleanTitle.isNotEmpty && processedTitleSigs.contains(titleSig)) {
+        continue;
+      }
+      if (cleanTitle.isNotEmpty) {
+        processedTitleSigs.add(titleSig);
+      }
+
+      // 6. Categorize based on physical path or relativePath
+      final String pathToCheck = filePath.isNotEmpty
+          ? filePath
+          : (video.relativePath ?? '').toLowerCase();
+
+      if (pathToCheck.contains('/dcim/') ||
+          pathToCheck.contains('/camera/') ||
+          pathToCheck.contains('camera')) {
+        tempCategorizedVideos['Camera']?.add(video);
+      } else if (pathToCheck.contains('whatsapp')) {
+        tempCategorizedVideos['WhatsApp']?.add(video);
+      } else {
+        // Route PLAYit, Downloads, Telegram, Snaptube, IDM, Movies & all other downloaded videos into Downloads
+        tempCategorizedVideos['Downloads']?.add(video);
       }
     }
 
-    setState(() {
-      categorizedVideos = tempCategorizedVideos;
-    });
+    // Remove empty categories so only populated folders are shown
+    tempCategorizedVideos.removeWhere((key, list) => list.isEmpty);
+
+    if (mounted) {
+      setState(() {
+        categorizedVideos = tempCategorizedVideos;
+      });
+    }
   }
 
   IconData _getFolderIcon(String category) {
